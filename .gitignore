@@ -1,4 +1,5 @@
 venv
 *.log
+.env
 sync_state.json
 data

@@ -18,21 +18,25 @@ This script works with Python 3.10+
 import json
 import logging
 import os
+from dotenv import load_dotenv
+
+load_dotenv() # Load environment variables from .env if present
+
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
 import httpx
 
 CONFIG = {
-    "base_url":    os.getenv("SYNATURE_URL",        "https://api.synature.ai"),
-    "api_token":   os.getenv("SYNATURE_TOKEN",      "syn_your_token_here"),
-    "project_id":  os.getenv("SYNATURE_PROJECT_ID", "your_project_id_here"),
-    "storage_dir": os.getenv("SYNATURE_STORAGE_DIR","./data"),
-    "state_file":  os.getenv("SYNATURE_STATE_FILE", "./sync_state.json"),
-    "poll_interval_seconds": int(os.getenv("SYNATURE_POLL_INTERVAL", "60")),
+    "base_url":    os.getenv("SYNAPP_URL",        "https://api.synature.ai"),
+    "api_token":   os.getenv("SYNAPP_TOKEN",      "your_token_here"),
+    "project_id":  os.getenv("SYNAPP_PROJECT_ID", "your_project_id_here"),
+    "storage_dir": os.getenv("SYNAPP_STORAGE_DIR","./data"),
+    "state_file":  os.getenv("SYNAPP_STATE_FILE", "./sync_state.json"),
+    "poll_interval_seconds": int(os.getenv("SYNAPP_POLL_INTERVAL", "60")),
     "page_size":   50,
 }
 
@@ -53,17 +57,20 @@ State persistence
 
 def load_state(state_file: str) -> dict:
     """Load persisted sync state from disk."""
-    path = Path(state_file)
-    if path.exists():
-        with open(path) as f:
-            state = json.load(f)
-        log.info("Resuming from state: last_recorded_at=%s, failed=%d", 
-                 state.get("last_recorded_at"),
-                 len(state.get("failed_ids", [])))
-        return state
-    log.info("No state file found - starting from the beginning")
-    return {"last_recorded_at": None, "failed_ids": []}
-
+    try:
+        path = Path(state_file)
+        if path.exists():
+            with open(path) as f:
+                state = json.load(f)
+            log.info("Resuming from state: last_uploaded_at=%s, failed=%d", 
+                     state.get("last_uploaded_at"),
+                     len(state.get("failed_ids", [])))
+            return state
+        log.info("No state file found - starting from the beginning")
+        return {"last_uploaded_at": None, "failed_ids": []}
+    except Exception as e:
+        log.error("Invalid state file: %s\nCreating new one", e)
+        return {"last_uploaded_at": None, "failed_ids": []}
 
 def save_state(state_file: str, state: dict) -> None:
     """Atomically persist sync state to disk."""
@@ -79,6 +86,13 @@ Utility functions
 
 def parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+def to_iso(value) -> str:
+    """Normalise whatever uploadedAt gives us to an ISO 8601 string."""
+    if isinstance(value, (int, float)):
+        # ts_milliseconds — convert ms to seconds for fromtimestamp
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+    return str(value)
 
 def sanitize_filename(name: str) -> str:
     # Replace path separators so a filename like "one/two.flac"
@@ -109,7 +123,7 @@ def fetch_recordings_page(
         "size":      config["page_size"],
     }
     if start_date:
-        params["startDate"] = start_date
+        params["uploadStartDate"] = start_date
 
     response = client.get("/recordings/", params=params)
     response.raise_for_status()
@@ -126,7 +140,7 @@ def iter_recordings(
 
     Yields one recording dict at a time, fetching pages as needed.
     Sorting oldest-first is critical: it means we can safely update
-    last_recorded_at after each individual download without risk of
+    last_uploaded_at after each individual download without risk of
     skipping recordings if the script is killed mid-page.
     """
     page = 0
@@ -149,7 +163,7 @@ def iter_recordings(
         # Sort oldest first within the page.
         # The API may already return them this way but we enforce it here
         # so that state updates are always monotonically increasing.
-        recordings.sort(key=lambda r: r["recordedAt"])
+        recordings.sort(key=lambda r: r["uploadedAt"])
 
         for recording in recordings:
             yield recording
@@ -208,9 +222,9 @@ def download_recording(
 '''
 Main sync logic
 '''
-def sync_once(client: httpx.Client, config: dict, state: dict) -> Tuple[int, int]:
+def sync_once(client: httpx.Client, config: dict, state: dict) -> Tuple[int, int, int]:
     """
-    Download all recordings newer than state["last_recorded_at"].
+    Download all recordings newer than state["last_uploaded_at"].
 
     Updates state after each successful download so progress is not
     lost if the script is killed. Returns the number of new files downloaded.
@@ -218,10 +232,11 @@ def sync_once(client: httpx.Client, config: dict, state: dict) -> Tuple[int, int
     storage_dir = Path(config["storage_dir"])
     storage_dir.mkdir(parents=True, exist_ok=True)
 
-    start_date = state.get("last_recorded_at")
+    start_date = state.get("last_uploaded_at")
     downloaded = 0
     failed_ids: set = set(state.get("failed_ids", []))
     failed = 0
+    skipped = 0
 
 
     # First retry any previously failed recordings
@@ -260,9 +275,12 @@ def sync_once(client: httpx.Client, config: dict, state: dict) -> Tuple[int, int
             path = download_recording(recording, storage_dir)
             if path:
                 downloaded += 1
+            else:
+                skipped += 1
+                log.info("Skipped recording %s (already exists)", recording_id)
 
             # Update cursor only on success or skip
-            state["last_recorded_at"] = recording["recordedAt"]
+            state["last_uploaded_at"] = to_iso(recording["uploadedAt"])
             state["failed_ids"] = list(failed_ids)
             save_state(config["state_file"], state)
 
@@ -272,13 +290,13 @@ def sync_once(client: httpx.Client, config: dict, state: dict) -> Tuple[int, int
             failed_ids.add(recording_id)
             # Still advance the cursor so we don't re-fetch this recording
             # via the date filter on the next run - it's tracked in failed_ids instead
-            state["last_recorded_at"] = recording["recordedAt"]
+            state["last_uploaded_at"] = recording["uploadedAt"]
             state["failed_ids"] = list(failed_ids)
             save_state(config["state_file"], state)
             failed += 1
             continue
 
-    return (downloaded, failed)
+    return (downloaded, failed, skipped)
 
 
 def run(config: dict) -> None:
@@ -287,8 +305,8 @@ def run(config: dict) -> None:
     with make_client(config) as client:
         # Initial sync, catch up on everything missed
         log.info("Starting initial sync")
-        downloaded, failed = sync_once(client, config, state)
-        log.info("Initial sync complete - downloaded %d recordings, %d failed", downloaded, failed)
+        downloaded, failed, skipped = sync_once(client, config, state)
+        log.info("Initial sync complete - downloaded %d recordings, %d failed, %d skipped", downloaded, failed, skipped)
 
         while True:
             interval = config["poll_interval_seconds"]
@@ -296,16 +314,21 @@ def run(config: dict) -> None:
             time.sleep(interval)
 
             try:
-                downloaded = sync_once(client, config, state)
+                downloaded, failed, skipped = sync_once(client, config, state)
                 if downloaded:
-                    log.info("Poll complete — downloaded %d new recordings", downloaded)
+                    log.info("Poll complete — downloaded %d new recordings, %d failed, %d skipped", downloaded, failed, skipped)
                 else:
                     log.info("Poll complete — no new recordings")
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 401:
-                    log.error("API token rejected (401) — check your token and exit")
+                    log.error("API token rejected (401) - check your token")
                     sys.exit(1)
+
+                if e.response.status_code == 403:
+                    log.error("Access forbidden (403) - check your project ID and token permissions")
+                    sys.exit(1)
+
                 log.error("HTTP error during poll: %s", e)
 
             except httpx.RequestError as e:
@@ -314,6 +337,6 @@ def run(config: dict) -> None:
 
 if __name__ == "__main__":
     if "your_token_here" in CONFIG["api_token"]:
-        print("ERROR: Set SYNATURE_TOKEN or edit CONFIG before running")
+        print("ERROR: Set SYNAPP_TOKEN or edit CONFIG before running")
         sys.exit(1)
     run(CONFIG)

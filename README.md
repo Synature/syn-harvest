@@ -86,12 +86,12 @@ The script is configured via environment variables. Create a `.env` file or expo
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SYNATURE_TOKEN` | ✅ | - | API token (`syn_…`) |
-| `SYNATURE_PROJECT_ID` | ✅ | - | ID of the project to sync |
-| `SYNATURE_URL` | | `https://api.synature.ai` | Base API URL |
-| `SYNATURE_STORAGE_DIR` | | `./data` | Directory to save audio files |
-| `SYNATURE_STATE_FILE` | | `./sync_state.json` | Path for the persistent cursor file |
-| `SYNATURE_POLL_INTERVAL` | | `60` | Seconds between polls after initial sync |
+| `SYNAPP_TOKEN` | ✅ | - | API token (`syn_…`) |
+| `SYNAPP_PROJECT_ID` | ✅ | - | ID of the project to sync |
+| `SYNAPP_URL` | | `https://api.synature.ai` | Base API URL |
+| `SYNAPP_STORAGE_DIR` | | `./data` | Directory to save audio files |
+| `SYNAPP_STATE_FILE` | | `./sync_state.json` | Path for the persistent cursor file |
+| `SYNAPP_POLL_INTERVAL` | | `60` | Seconds between polls after initial sync |
 
 ### Generating an API token
 
@@ -105,9 +105,9 @@ The script is configured via environment variables. Create a `.env` file or expo
 ## Usage
 
 ```bash
-export SYNATURE_TOKEN="syn_your_token_here"
-export SYNATURE_PROJECT_ID="your-project-id"
-export SYNATURE_STORAGE_DIR="./data"
+export SYNAPP_TOKEN="syn_your_token_here"
+export SYNAPP_PROJECT_ID="your-project-id"
+export SYNAPP_STORAGE_DIR="./data"
 
 python src/harvest.py
 ```
@@ -122,7 +122,7 @@ On first run, the script will download all existing recordings. On subsequent ru
 2026-04-01 09:00:02  INFO      Downloading Myotis_mystacinus_20240803_231805.flac → recordings/2024/08/03/
 ...
 2026-04-01 09:01:14  INFO      Initial sync complete — downloaded 68 recordings
-2026-04-01 09:01:14  INFO      Sleeping 300s before next poll
+2026-04-01 09:01:14  INFO      Sleeping 60s before next poll
 ```
 
 ---
@@ -150,12 +150,12 @@ The script writes a `sync_state.json` file to track its progress:
 
 ```json
 {
-  "last_recorded_at": "2024-08-04T00:31:22Z",
+  "last_uploaded_at": "2024-08-04T00:31:22Z",
   "failed_ids": []
 }
 ```
 
-- **`last_recorded_at`** - timestamp of the last successfully downloaded recording. Used as `startDate` on subsequent runs so only newer recordings are fetched.
+- **`last_uploaded_at`** - timestamp of the last successfully downloaded recording. Used as `startDate` on subsequent runs so only newer recordings are fetched.
 - **`failed_ids`** - list of recording UUIDs that failed to download. Retried at the start of every sync run with a fresh presigned URL. Remove an entry manually to permanently skip a recording.
 
 Delete the state file to trigger a full re-sync from the beginning.
@@ -176,9 +176,9 @@ After=network.target
 Type=simple
 User=youruser
 WorkingDirectory=/opt/syn-harvest
-Environment="SYNATURE_TOKEN=syn_your_token_here"
-Environment="SYNATURE_PROJECT_ID=your-project-id"
-Environment="SYNATURE_STORAGE_DIR=/data/recordings"
+Environment="SYNAPP_TOKEN=syn_your_token_here"
+Environment="SYNAPP_PROJECT_ID=your-project-id"
+Environment="SYNAPP_STORAGE_DIR=/data/recordings"
 ExecStart=/opt/synharvest/.venv/bin/python harvest.py
 Restart=on-failure
 RestartSec=30
