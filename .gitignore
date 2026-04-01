@@ -1,0 +1,4 @@
+venv
+*.log
+sync_state.json
+data
