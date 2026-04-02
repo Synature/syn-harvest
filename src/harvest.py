@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-Synature recording sync script.
+SynHarvest - Skript to sync Synature recordings to local disk for backup or further processing
 
 Downloads all recordings for a project and continuously polls for new ones.
 State (last downloaded timestamp) is persisted to disk so the script can
 resume safely after being killed.
 
 Usage:
-    python sync_recordings.py
+    python harvest.py
 
 Configuration:
     Edit the CONFIG block below, or set environment variables.
+    - SYNAPP_URL: Base URL of the Synature API (default: https://api.synature.ai)
+    - SYNAPP_TOKEN: Your API token (required)
+    - SYNAPP_PROJECT_ID: The project ID to sync (required)
+    - SYNAPP_STORAGE_DIR: Local directory to save recordings (default: ./data)
+    - SYNAPP_STATE_FILE: Path to JSON file for persisting sync state (default: ./sync_state.json)
 
 This script works with Python 3.10+
 """
